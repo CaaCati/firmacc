@@ -349,13 +349,13 @@
       <svg viewBox="0 0 24 24" fill="none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z" stroke="#B8902E" stroke-width="1.6"/><path d="M14 2v6h6" stroke="#B8902E" stroke-width="1.6"/></svg>
     </div>
     <h2>Firmá un documento</h2>
-    <p>Elegí un PDF de tu celular para colocar tu firma y descargarlo o compartirlo, listo para enviar.</p>
+    <p>Elegí un PDF o una foto de tu celular para colocar tu firma y descargarlo o compartirlo, listo para enviar.</p>
     <div class="btn-row">
-      <button class="btn btn-primary" id="btn-pick-file">Elegir PDF</button>
+      <button class="btn btn-primary" id="btn-pick-file">Elegir PDF o foto</button>
     </div>
-    <input type="file" id="file-input" accept="application/pdf,.pdf">
+    <input type="file" id="file-input" accept="application/pdf,.pdf,image/jpeg,image/png,.jpg,.jpeg,.png">
     <p class="install-hint" id="install-hint">
-      <b>Tip:</b> instalá esta app en tu pantalla de inicio (menú del navegador → "Agregar a pantalla de inicio"). Así, cuando te llegue un PDF por WhatsApp o Gmail, vas a poder tocar "Compartir" y firmarlo directo desde acá.
+      <b>Tip:</b> instalá esta app en tu pantalla de inicio (menú del navegador → "Agregar a pantalla de inicio"). Así, cuando te llegue un PDF o una foto por WhatsApp o Gmail, vas a poder tocar "Compartir" y firmarlo directo desde acá.
     </p>
   </section>
 
@@ -475,6 +475,15 @@
   let stampNaturalW = 0, stampNaturalH = 0;
   let overlayLeft = 0, overlayTop = 0;
   let finalBlob = null;
+  let finalFileExt = 'pdf';
+  let finalMime = 'application/pdf';
+
+  // Modo del documento cargado: 'pdf' o 'image' (foto recibida por WhatsApp, etc.)
+  let documentMode = 'pdf';
+  let imageEl = null;
+  let imageNaturalWidth = 0;
+  let imageNaturalHeight = 0;
+  let originalImageMime = 'image/jpeg';
 
   const img0 = new Image();
   img0.onload = () => { stampNaturalW = img0.naturalWidth; stampNaturalH = img0.naturalHeight; };
@@ -498,12 +507,26 @@
   function resetAll(){
     originalArrayBuffer = null;
     pdfDoc = null;
+    imageEl = null;
+    imageNaturalWidth = 0;
+    imageNaturalHeight = 0;
+    documentMode = 'pdf';
     finalBlob = null;
+    finalFileExt = 'pdf';
+    finalMime = 'application/pdf';
     currentPage = 1;
     manualRotation = 0;
     stampVisible = true;
     fileInput.value = '';
     showView('empty');
+  }
+
+  // Elige el flujo correcto (PDF o foto) según el tipo de archivo recibido.
+  function openAnyFile(file){
+    if (file && file.type && file.type.startsWith('image/')) {
+      return openImageFile(file);
+    }
+    return openPdfFile(file);
   }
 
   // ------------------------------------------------------------------
@@ -514,6 +537,7 @@
       showSpinner('Abriendo documento…');
       manualRotation = 0;
       stampVisible = true;
+      documentMode = 'pdf';
       originalArrayBuffer = await file.arrayBuffer();
       const loadingTask = pdfjsLib.getDocument({ data: originalArrayBuffer.slice(0) });
       pdfDoc = await loadingTask.promise;
@@ -526,6 +550,43 @@
       showToast('No se pudo abrir ese PDF. Probá con otro archivo.', 3400);
       showView('empty');
     }finally{
+      hideSpinner();
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Cargar una foto (JPG/PNG), por ejemplo recibida por WhatsApp
+  // ------------------------------------------------------------------
+  async function openImageFile(file){
+    let objectUrl = null;
+    try{
+      showSpinner('Abriendo imagen…');
+      manualRotation = 0;
+      stampVisible = true;
+      documentMode = 'image';
+      originalImageMime = (file.type === 'image/png') ? 'image/png' : 'image/jpeg';
+
+      objectUrl = URL.createObjectURL(file);
+      const img = new Image();
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = () => reject(new Error('no se pudo decodificar la imagen'));
+        img.src = objectUrl;
+      });
+
+      imageEl = img;
+      imageNaturalWidth = img.naturalWidth;
+      imageNaturalHeight = img.naturalHeight;
+      numPages = 1;
+      currentPage = 1;
+      showView('editor');
+      renderImagePage();
+    }catch(err){
+      console.error(err);
+      showToast('No se pudo abrir esa imagen. Probá con otra.', 3400);
+      showView('empty');
+    }finally{
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
       hideSpinner();
     }
   }
@@ -562,6 +623,47 @@
     pageIndicator.textContent = `Página ${num} de ${numPages}`;
     btnPrevPage.disabled = num <= 1;
     btnNextPage.disabled = num >= numPages;
+
+    positionStampDefault();
+    applyStampRotationCss();
+    stampEl.style.display = stampVisible ? '' : 'none';
+  }
+
+  // Dibuja la foto cargada en el mismo canvas/overlay que usan los PDF,
+  // reutilizando toda la lógica de arrastre, rotación y posicionamiento
+  // (currentPdfPageWidthPts/HeightPts hacen de "tamaño natural" y
+  // currentRenderScale de "px CSS por píxel natural").
+  function renderImagePage(){
+    const containerWidth = Math.min(canvasScroll.clientWidth - 32, 720);
+    const scale = containerWidth / imageNaturalWidth;
+    const dispW = imageNaturalWidth * scale;
+    const dispH = imageNaturalHeight * scale;
+    const outputScale = window.devicePixelRatio || 1;
+
+    canvas.width = Math.floor(dispW * outputScale);
+    canvas.height = Math.floor(dispH * outputScale);
+    canvas.style.width = dispW + 'px';
+    canvas.style.height = dispH + 'px';
+    canvasWrap.style.width = dispW + 'px';
+    canvasWrap.style.height = dispH + 'px';
+
+    ctx.setTransform(outputScale, 0, 0, outputScale, 0, 0);
+    ctx.clearRect(0, 0, dispW, dispH);
+    ctx.drawImage(imageEl, 0, 0, dispW, dispH);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+    currentPageWidthCss = dispW;
+    currentPageHeightCss = dispH;
+    currentPdfPageWidthPts = imageNaturalWidth;
+    currentPdfPageHeightPts = imageNaturalHeight;
+    currentRenderScale = scale;
+    currentPageRotation = 0;
+    currentRawPageWidthPts = imageNaturalWidth;
+    currentRawPageHeightPts = imageNaturalHeight;
+
+    pageIndicator.textContent = 'Foto';
+    btnPrevPage.disabled = true;
+    btnNextPage.disabled = true;
 
     positionStampDefault();
     applyStampRotationCss();
@@ -678,6 +780,14 @@
       showToast('No hay firma para colocar en esta página.', 2600);
       return;
     }
+    if (documentMode === 'image') {
+      await signImageAndFinish();
+    } else {
+      await signPdfAndFinish();
+    }
+  });
+
+  async function signPdfAndFinish(){
     try{
       showSpinner('Firmando documento…');
       const { PDFDocument, degrees } = PDFLib;
@@ -723,8 +833,18 @@
         rotate: degrees(placed.rotateDeg)
       });
 
-      const outBytes = await pdfLibDoc.save();
+      // useObjectStreams:false: el modo por defecto (con object streams
+      // comprimidos) es una fuente conocida de PDFs "dañados"/ilegibles
+      // que genera pdf-lib con ciertos documentos de origen (típicamente
+      // los de más de una página armados por otro software). Desactivarlo
+      // agranda un poco el archivo pero es mucho más compatible.
+      const outBytes = await pdfLibDoc.save({ useObjectStreams: false });
+      if (!outBytes || outBytes.length < 100) {
+        throw new Error('el PDF generado quedó vacío');
+      }
       finalBlob = new Blob([outBytes], { type: 'application/pdf' });
+      finalFileExt = 'pdf';
+      finalMime = 'application/pdf';
       showView('done');
     }catch(err){
       console.error(err);
@@ -733,7 +853,51 @@
     }finally{
       hideSpinner();
     }
-  });
+  }
+
+  async function signImageAndFinish(){
+    try{
+      showSpinner('Firmando imagen…');
+      const off = document.createElement('canvas');
+      off.width = imageNaturalWidth;
+      off.height = imageNaturalHeight;
+      const octx = off.getContext('2d');
+      octx.drawImage(imageEl, 0, 0, imageNaturalWidth, imageNaturalHeight);
+
+      const ratio = (stampNaturalH && stampNaturalW) ? (stampNaturalH / stampNaturalW) : 0.49;
+      const stampWidthNat = currentPdfPageWidthPts * STAMP_WIDTH_RATIO; // = imageNaturalWidth * ratio fijo
+      const stampHeightNat = stampWidthNat * ratio;
+
+      // Acá no hay /Rotate ni espacio "y-arriba" como en un PDF: el canvas
+      // de salida usa el mismo origen (arriba-izquierda) que la pantalla,
+      // así que alcanza con escalar la posición y rotar en sentido horario.
+      const natCx = (overlayLeft + stampEl.offsetWidth / 2) / currentRenderScale;
+      const natCy = (overlayTop + stampEl.offsetHeight / 2) / currentRenderScale;
+
+      octx.save();
+      octx.translate(natCx, natCy);
+      octx.rotate(manualRotation * Math.PI / 180);
+      octx.drawImage(stampImg, -stampWidthNat / 2, -stampHeightNat / 2, stampWidthNat, stampHeightNat);
+      octx.restore();
+
+      const outputMime = originalImageMime === 'image/png' ? 'image/png' : 'image/jpeg';
+      const blob = await new Promise((resolve) => {
+        off.toBlob(resolve, outputMime, outputMime === 'image/jpeg' ? 0.92 : undefined);
+      });
+      if (!blob) throw new Error('no se pudo generar la imagen final');
+
+      finalBlob = blob;
+      finalFileExt = outputMime === 'image/png' ? 'png' : 'jpg';
+      finalMime = outputMime;
+      showView('done');
+    }catch(err){
+      console.error(err);
+      const detail = (err && err.message) ? (' (' + err.message + ')') : '';
+      showToast('No se pudo firmar la imagen' + detail + '. Probá de nuevo.', 4200);
+    }finally{
+      hideSpinner();
+    }
+  }
 
   function base64ToBytes(b64){
     const binStr = atob(b64);
@@ -776,7 +940,7 @@
     const url = URL.createObjectURL(finalBlob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'documento_firmado.pdf';
+    a.download = 'documento_firmado.' + finalFileExt;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -785,7 +949,7 @@
 
   btnShare.addEventListener('click', async () => {
     if (!finalBlob) return;
-    const file = new File([finalBlob], 'documento_firmado.pdf', { type: 'application/pdf' });
+    const file = new File([finalBlob], 'documento_firmado.' + finalFileExt, { type: finalMime });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try{
         await navigator.share({ files: [file], title: 'Documento firmado' });
@@ -810,12 +974,14 @@
   btnPickFile.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', () => {
     const file = fileInput.files && fileInput.files[0];
-    if (file) openPdfFile(file);
+    if (file) openAnyFile(file);
   });
 
   // Reposicionar si cambia el tamaño de pantalla (rotación, etc.)
   window.addEventListener('resize', () => {
-    if (pdfDoc && views.editor.classList.contains('active')) renderPage(currentPage);
+    if (!views.editor.classList.contains('active')) return;
+    if (documentMode === 'image' && imageEl) renderImagePage();
+    else if (pdfDoc) renderPage(currentPage);
   });
 
   // ------------------------------------------------------------------
@@ -833,13 +999,16 @@
     try{
       showSpinner('Recibiendo documento…');
       const cache = await caches.open('firma-cc-shared-files');
-      const resp = await cache.match('/shared-pdf');
+      const resp = await cache.match('/shared-file');
       if (resp) {
         const blob = await resp.blob();
-        await cache.delete('/shared-pdf');
+        await cache.delete('/shared-file');
         history.replaceState(null, '', window.location.pathname);
-        const file = new File([blob], 'documento.pdf', { type: 'application/pdf' });
-        await openPdfFile(file);
+        const isImage = blob.type && blob.type.startsWith('image/');
+        const ext = isImage ? (blob.type === 'image/png' ? 'png' : 'jpg') : 'pdf';
+        const mime = blob.type || (isImage ? 'image/jpeg' : 'application/pdf');
+        const file = new File([blob], 'documento.' + ext, { type: mime });
+        await openAnyFile(file);
         return;
       }
     }catch(err){
