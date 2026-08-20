@@ -471,6 +471,8 @@
   let currentRawPageWidthPts = 0;  // tamaño real de página (sin rotación), espacio de pdf-lib
   let currentRawPageHeightPts = 0;
   let manualRotation = 0;      // rotación elegida a mano (0/90/180/270, sentido horario)
+  let renderToken = 0;         // evita que un render de página viejo pise el estado de uno más nuevo
+  let pendingRender = Promise.resolve(); // firmar espera a que termine el render en curso antes de leer la geometría
   let stampVisible = true;
   let stampNaturalW = 0, stampNaturalH = 0;
   let overlayLeft = 0, overlayTop = 0;
@@ -592,7 +594,10 @@
   }
 
   async function renderPage(num){
+    const myToken = ++renderToken;
     const page = await pdfDoc.getPage(num);
+    if (myToken !== renderToken) return; // se pidió otra página mientras esperábamos ésta
+
     const rotation = ((page.rotate % 360) + 360) % 360; // 0/90/180/270, sentido horario
     const containerWidth = Math.min(canvasScroll.clientWidth - 32, 720);
     const baseViewport = page.getViewport({ scale: 1 }); // ya incluye la rotación de la página
@@ -610,6 +615,7 @@
 
     const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null;
     await page.render({ canvasContext: ctx, viewport, transform }).promise;
+    if (myToken !== renderToken) return; // idem: llegó tarde, ya no corresponde a la página actual
 
     currentPageWidthCss = viewport.width;
     currentPageHeightCss = viewport.height;
@@ -769,13 +775,18 @@
   // ------------------------------------------------------------------
   // Navegación de páginas
   // ------------------------------------------------------------------
-  btnPrevPage.addEventListener('click', () => { if (currentPage > 1){ currentPage--; renderPage(currentPage); } });
-  btnNextPage.addEventListener('click', () => { if (currentPage < numPages){ currentPage++; renderPage(currentPage); } });
+  btnPrevPage.addEventListener('click', () => { if (currentPage > 1){ currentPage--; pendingRender = renderPage(currentPage); } });
+  btnNextPage.addEventListener('click', () => { if (currentPage < numPages){ currentPage++; pendingRender = renderPage(currentPage); } });
 
   // ------------------------------------------------------------------
   // Firmar
   // ------------------------------------------------------------------
   btnFirmar.addEventListener('click', async () => {
+    // Si el usuario cambió de página o giró el celular justo antes de tocar
+    // "Firmar", esperamos a que termine ese render: si no, se podía firmar
+    // usando el tamaño/rotación de la página anterior y la firma quedaba
+    // fuera de la hoja (invisible) en documentos de 2 o más páginas.
+    await pendingRender;
     if (!stampVisible) {
       showToast('No hay firma para colocar en esta página.', 2600);
       return;
@@ -981,7 +992,7 @@
   window.addEventListener('resize', () => {
     if (!views.editor.classList.contains('active')) return;
     if (documentMode === 'image' && imageEl) renderImagePage();
-    else if (pdfDoc) renderPage(currentPage);
+    else if (pdfDoc) pendingRender = renderPage(currentPage);
   });
 
   // ------------------------------------------------------------------
