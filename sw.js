@@ -1,7 +1,7 @@
 // Service worker: cachea la app para que abra sin conexión y recibe los PDF
 // que llegan por el botón "Compartir" del celular (Web Share Target).
 
-const CACHE_VERSION = 'firma-cc-v1';
+const CACHE_VERSION = 'firma-cc-v2';
 const SHARED_FILES_CACHE = 'firma-cc-shared-files';
 
 const PRECACHE_URLS = [
@@ -12,7 +12,7 @@ const PRECACHE_URLS = [
   './icon-512.png',
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js',
-  'https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js'
+  'https://cdn.jsdelivr.net/npm/@cantoo/pdf-lib@2.9.1/dist/pdf-lib.min.js'
 ];
 
 self.addEventListener('install', (event) => {

@@ -406,7 +406,7 @@
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@cantoo/pdf-lib@2.9.1/dist/pdf-lib.min.js"></script>
 <script>
 (function(){
   "use strict";
@@ -880,11 +880,19 @@
     try{
       showSpinner('Firmando documento…');
       const { PDFDocument, degrees } = PDFLib;
-      // ignoreEncryption + updateMetadata:false: varios PDF generados por
-      // sistemas de gestión documental traen permisos/metadata que hacen
-      // que pdf-lib rechace el archivo si no se le pide tolerancia.
+      // ignoreEncryption + password:'' : muchos PDF oficiales (AFIP/ARCA,
+      // etc.) vienen encriptados con contraseña vacía sólo para marcarlos
+      // como no editables. Sin "password" la librería NO descifra el
+      // contenido: lo deja tal cual (cifrado) y agrega la firma sin
+      // cifrar, así que cualquier lector de PDF de verdad, al intentar
+      // descifrar TODO el documento, termina arruinando justo la firma
+      // (que nunca estuvo cifrada) y esta queda invisible. Pasándole la
+      // contraseña (vacía) se descifra de verdad antes de firmar.
+      // updateMetadata:false evita tocar metadata que a veces hace que la
+      // librería rechace el archivo si no se le pide tolerancia.
       const pdfLibDoc = await PDFDocument.load(originalArrayBuffer, {
         ignoreEncryption: true,
+        password: '',
         updateMetadata: false
       });
 
