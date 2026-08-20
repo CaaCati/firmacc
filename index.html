@@ -476,6 +476,11 @@
   let stampVisible = true;
   let stampNaturalW = 0, stampNaturalH = 0;
   let overlayLeft = 0, overlayTop = 0;
+  // Firma guardada por hoja: { [numeroDePagina]: { fracLeft, fracTop, rotation, visible } }.
+  // fracLeft/fracTop son proporción (0..1) de la esquina superior izquierda de la
+  // firma respecto del ancho/alto visual de ESA hoja, así no dependen del zoom
+  // ni de si la pantalla se redibuja con otro tamaño.
+  let pageStamps = {};
   let finalBlob = null;
   let finalFileExt = 'pdf';
   let finalMime = 'application/pdf';
@@ -519,6 +524,7 @@
     currentPage = 1;
     manualRotation = 0;
     stampVisible = true;
+    pageStamps = {};
     fileInput.value = '';
     showView('empty');
   }
@@ -539,6 +545,7 @@
       showSpinner('Abriendo documento…');
       manualRotation = 0;
       stampVisible = true;
+      pageStamps = {};
       documentMode = 'pdf';
       originalArrayBuffer = await file.arrayBuffer();
       const loadingTask = pdfjsLib.getDocument({ data: originalArrayBuffer.slice(0) });
@@ -630,9 +637,9 @@
     btnPrevPage.disabled = num <= 1;
     btnNextPage.disabled = num >= numPages;
 
-    positionStampDefault();
+    restorePageStamp(num);
     applyStampRotationCss();
-    stampEl.style.display = stampVisible ? '' : 'none';
+    updateStampVisibilityUI();
   }
 
   // Dibuja la foto cargada en el mismo canvas/overlay que usan los PDF,
@@ -690,6 +697,72 @@
     applyStampPosition();
   }
 
+  // Misma cuenta que positionStampDefault(), pero devuelve la posición como
+  // fracción (0..1) del ancho/alto de una hoja cualquiera, para poder
+  // calcular dónde iría la firma por defecto en una página que nunca se
+  // llegó a mostrar en pantalla (por ejemplo, un documento largo del que
+  // el usuario sólo miró las primeras hojas).
+  function defaultStampFrac(pageW, pageH){
+    const ratio = (stampNaturalH && stampNaturalW) ? (stampNaturalH / stampNaturalW) : 0.49;
+    const stampW = pageW * STAMP_WIDTH_RATIO;
+    const stampH = stampW * ratio;
+    const left = Math.max(0, Math.min(pageW - stampW - Math.min(24, pageW * 0.05), pageW - stampW));
+    const top = Math.max(0, Math.min(pageH - stampH - Math.min(24, pageH * 0.05), pageH - stampH));
+    return { fracLeft: pageW ? left / pageW : 0, fracTop: pageH ? top / pageH : 0 };
+  }
+
+  // Guarda la posición/rotación/visibilidad de la firma de la página que se
+  // está mostrando ahora mismo, como fracción del tamaño de esa hoja (así no
+  // depende del zoom ni de si la pantalla se redibuja con otro ancho).
+  function saveCurrentPageStamp(num){
+    if (documentMode !== 'pdf' || !num) return;
+    pageStamps[num] = {
+      fracLeft: currentPageWidthCss ? overlayLeft / currentPageWidthCss : 0,
+      fracTop: currentPageHeightCss ? overlayTop / currentPageHeightCss : 0,
+      rotation: manualRotation,
+      visible: stampVisible
+    };
+  }
+
+  // Al mostrar una página, restaura la firma tal como quedó la última vez
+  // que se vio esa página; si es la primera vez, usa la posición por
+  // defecto (y la deja guardada, para que firmar sea consistente aunque el
+  // usuario no vuelva a pasar por esta hoja).
+  function restorePageStamp(num){
+    const saved = pageStamps[num];
+    if (saved) {
+      const stampWidthCss = currentPageWidthCss * STAMP_WIDTH_RATIO;
+      const ratio = (stampNaturalH && stampNaturalW) ? (stampNaturalH / stampNaturalW) : 0.49;
+      stampEl.style.width = stampWidthCss + 'px';
+      stampEl.style.height = (stampWidthCss * ratio) + 'px';
+      overlayLeft = saved.fracLeft * currentPageWidthCss;
+      overlayTop = saved.fracTop * currentPageHeightCss;
+      manualRotation = saved.rotation;
+      stampVisible = saved.visible;
+      clampStamp();
+      applyStampPosition();
+    } else {
+      positionStampDefault();
+      manualRotation = 0;
+      stampVisible = true;
+      saveCurrentPageStamp(num);
+    }
+  }
+
+  // Muestra u oculta la firma en pantalla y ajusta el botón/ayuda según
+  // corresponda, sin tocar la posición guardada.
+  function updateStampVisibilityUI(){
+    stampEl.style.display = stampVisible ? '' : 'none';
+    btnFirmar.disabled = !stampVisible;
+    if (stampVisible) {
+      editorHelpEl.textContent = 'Arrastrá la firma hasta el lugar donde tiene que ir. Podés rotarla o quitarla con los botones de la esquina.';
+    } else {
+      editorHelpEl.innerHTML = 'Sacaste la firma de esta página. <button type="button" class="btn-text" id="btn-add-stamp-back" style="padding:6px 14px;border-radius:10px;">+ Agregar firma</button>';
+      const backBtn = document.getElementById('btn-add-stamp-back');
+      if (backBtn) backBtn.addEventListener('click', showStamp);
+    }
+  }
+
   function clampStamp(){
     const w = stampEl.offsetWidth;
     const h = stampEl.offsetHeight;
@@ -709,19 +782,16 @@
   function showStamp(){
     stampVisible = true;
     positionStampDefault();
+    manualRotation = 0;
     applyStampRotationCss();
-    stampEl.style.display = '';
-    btnFirmar.disabled = false;
-    editorHelpEl.textContent = 'Arrastrá la firma hasta el lugar donde tiene que ir. Podés rotarla o quitarla con los botones de la esquina.';
+    updateStampVisibilityUI();
+    saveCurrentPageStamp(currentPage);
   }
 
   function hideStamp(){
     stampVisible = false;
-    stampEl.style.display = 'none';
-    btnFirmar.disabled = true;
-    editorHelpEl.innerHTML = 'Sacaste la firma de esta página. <button type="button" class="btn-text" id="btn-add-stamp-back" style="padding:6px 14px;border-radius:10px;">+ Agregar firma</button>';
-    const backBtn = document.getElementById('btn-add-stamp-back');
-    if (backBtn) backBtn.addEventListener('click', showStamp);
+    updateStampVisibilityUI();
+    saveCurrentPageStamp(currentPage);
   }
 
   // ------------------------------------------------------------------
@@ -734,6 +804,7 @@
     e.stopPropagation();
     manualRotation = (manualRotation + 90) % 360;
     applyStampRotationCss();
+    saveCurrentPageStamp(currentPage);
   });
   btnRemoveStamp.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -768,6 +839,7 @@
     dragging = false;
     stampEl.classList.remove('dragging');
     try{ stampEl.releasePointerCapture(e.pointerId); }catch(_){}
+    saveCurrentPageStamp(currentPage);
   }
   stampEl.addEventListener('pointerup', endDrag);
   stampEl.addEventListener('pointercancel', endDrag);
@@ -783,18 +855,24 @@
   // ------------------------------------------------------------------
   btnFirmar.addEventListener('click', async () => {
     // Si el usuario cambió de página o giró el celular justo antes de tocar
-    // "Firmar", esperamos a que termine ese render: si no, se podía firmar
-    // usando el tamaño/rotación de la página anterior y la firma quedaba
-    // fuera de la hoja (invisible) en documentos de 2 o más páginas.
+    // "Firmar", esperamos a que termine ese render para que quede guardada
+    // la última posición que tocó.
     await pendingRender;
-    if (!stampVisible) {
-      showToast('No hay firma para colocar en esta página.', 2600);
-      return;
-    }
-    if (documentMode === 'image') {
-      await signImageAndFinish();
-    } else {
+    if (documentMode === 'pdf') {
+      saveCurrentPageStamp(currentPage);
+      const algunaVisible = Array.from({ length: numPages }, (_, i) => i + 1)
+        .some((p) => (pageStamps[p] ? pageStamps[p].visible : true));
+      if (!algunaVisible) {
+        showToast('No hay ninguna firma colocada en el documento.', 2600);
+        return;
+      }
       await signPdfAndFinish();
+    } else {
+      if (!stampVisible) {
+        showToast('No hay firma para colocar en esta imagen.', 2600);
+        return;
+      }
+      await signImageAndFinish();
     }
   });
 
@@ -811,38 +889,53 @@
       });
 
       const pages = pdfLibDoc.getPages();
-      if (currentPage < 1 || currentPage > pages.length) {
-        throw new Error('la página ' + currentPage + ' ya no existe en el documento');
-      }
-      const page = pages[currentPage - 1];
-
       const pngBytes = base64ToBytes(SIGNATURE_BASE64);
       const pngImage = await pdfLibDoc.embedPng(pngBytes);
-
       const ratio = (stampNaturalH && stampNaturalW) ? (stampNaturalH / stampNaturalW) : 0.49;
-      const stampWidthPts = currentPdfPageWidthPts * STAMP_WIDTH_RATIO;
-      const stampHeightPts = stampWidthPts * ratio;
 
-      // Centro de la firma tal como se ve en pantalla (espacio "visual",
-      // el mismo que usa pdf.js para mostrar la página ya rotada).
-      const dispCx = (overlayLeft + stampEl.offsetWidth / 2) / currentRenderScale;
-      const dispCy = (overlayTop + stampEl.offsetHeight / 2) / currentRenderScale;
+      // Cada hoja lleva SU propia firma (posición, rotación, o ninguna si el
+      // usuario la sacó), así que la geometría de cada página se recalcula
+      // acá con pdf.js en lugar de reusar la de la página que esté abierta
+      // en pantalla en este momento.
+      for (let pageNum = 1; pageNum <= pages.length; pageNum++) {
+        const stamp = pageStamps[pageNum];
+        const visible = stamp ? stamp.visible : true; // por defecto, toda hoja lleva firma
+        if (!visible) continue;
 
-      // pdf-lib coloca el contenido siempre en el espacio "crudo" de la
-      // página (el que ignora /Rotate), así que hay que convertir el punto
-      // y compensar la rotación de la página en la firma para que, una vez
-      // que el lector aplique /Rotate, todo quede donde se ve en pantalla.
-      const raw = dispPointToRaw(dispCx, dispCy, currentPageRotation, currentRawPageWidthPts, currentRawPageHeightPts);
-      const netCW = ((manualRotation - currentPageRotation) % 360 + 360) % 360;
-      const placed = computeStampAnchor(raw.x, raw.y, stampWidthPts, stampHeightPts, netCW);
+        const pdfjsPage = await pdfDoc.getPage(pageNum);
+        const rotation = ((pdfjsPage.rotate % 360) + 360) % 360;
+        const baseViewport = pdfjsPage.getViewport({ scale: 1 });
+        const rawViewport = pdfjsPage.getViewport({ scale: 1, rotation: 0 });
+        const pageWidthPts = baseViewport.width;
+        const pageHeightPts = baseViewport.height;
 
-      page.drawImage(pngImage, {
-        x: placed.x,
-        y: placed.y,
-        width: stampWidthPts,
-        height: stampHeightPts,
-        rotate: degrees(placed.rotateDeg)
-      });
+        const frac = stamp || defaultStampFrac(pageWidthPts, pageHeightPts);
+        const rotationManual = stamp ? stamp.rotation : 0;
+
+        const stampWidthPts = pageWidthPts * STAMP_WIDTH_RATIO;
+        const stampHeightPts = stampWidthPts * ratio;
+
+        // Centro de la firma en espacio "visual" (el que usa pdf.js, ya
+        // rotado por /Rotate), a partir de la fracción guardada.
+        const dispCx = frac.fracLeft * pageWidthPts + stampWidthPts / 2;
+        const dispCy = frac.fracTop * pageHeightPts + stampHeightPts / 2;
+
+        // pdf-lib coloca el contenido siempre en el espacio "crudo" de la
+        // página (el que ignora /Rotate), así que hay que convertir el punto
+        // y compensar la rotación de la página en la firma para que, una vez
+        // que el lector aplique /Rotate, todo quede donde se ve en pantalla.
+        const raw = dispPointToRaw(dispCx, dispCy, rotation, rawViewport.width, rawViewport.height);
+        const netCW = ((rotationManual - rotation) % 360 + 360) % 360;
+        const placed = computeStampAnchor(raw.x, raw.y, stampWidthPts, stampHeightPts, netCW);
+
+        pages[pageNum - 1].drawImage(pngImage, {
+          x: placed.x,
+          y: placed.y,
+          width: stampWidthPts,
+          height: stampHeightPts,
+          rotate: degrees(placed.rotateDeg)
+        });
+      }
 
       // useObjectStreams:false: el modo por defecto (con object streams
       // comprimidos) es una fuente conocida de PDFs "dañados"/ilegibles
