@@ -217,6 +217,24 @@
   }
   .stamp img{width:100%;height:100%;display:block;pointer-events:none;user-select:none;-webkit-user-drag:none;}
   .stamp.dragging{cursor:grabbing;outline-color:var(--gold);}
+  .stamp-ctrl{
+    position:absolute;
+    width:32px;height:32px;
+    border-radius:50%;
+    border:2px solid var(--paper);
+    background:var(--navy);
+    color:var(--paper);
+    display:flex;align-items:center;justify-content:center;
+    font-size:16px;
+    line-height:1;
+    padding:0;
+    cursor:pointer;
+    touch-action:none;
+    box-shadow:0 2px 6px rgba(0,0,0,.3);
+    z-index:5;
+  }
+  .stamp-ctrl.rotate{top:-16px;right:-16px;}
+  .stamp-ctrl.remove{top:-16px;left:-16px;background:var(--danger);font-size:20px;}
 
   .editor-help{
     flex:0 0 auto;
@@ -353,10 +371,12 @@
         <canvas id="pdf-canvas"></canvas>
         <div class="stamp" id="stamp">
           <img id="stamp-img" src="" alt="Firma">
+          <button type="button" class="stamp-ctrl rotate" id="btn-rotate-stamp" aria-label="Rotar firma" title="Rotar firma">&#8635;</button>
+          <button type="button" class="stamp-ctrl remove" id="btn-remove-stamp" aria-label="Quitar firma" title="Quitar firma">&times;</button>
         </div>
       </div>
     </div>
-    <p class="editor-help">Arrastrá la firma hasta el lugar donde tiene que ir</p>
+    <p class="editor-help" id="editor-help">Arrastrá la firma hasta el lugar donde tiene que ir. Podés rotarla o quitarla con los botones de la esquina.</p>
     <div class="editor-bar">
       <button class="btn btn-outline" id="btn-cancel-editor">Cancelar</button>
       <button class="btn btn-gold" id="btn-firmar">Firmar documento</button>
@@ -422,6 +442,9 @@
   const ctx = canvas.getContext('2d');
   const stampEl = document.getElementById('stamp');
   const stampImg = document.getElementById('stamp-img');
+  const btnRotateStamp = document.getElementById('btn-rotate-stamp');
+  const btnRemoveStamp = document.getElementById('btn-remove-stamp');
+  const editorHelpEl = document.getElementById('editor-help');
   const btnShare = document.getElementById('btn-share');
   const btnDownload = document.getElementById('btn-download');
   const btnSignAnother = document.getElementById('btn-sign-another');
@@ -444,6 +467,11 @@
   let currentPdfPageWidthPts = 0;
   let currentPdfPageHeightPts = 0;
   let currentRenderScale = 1;  // px CSS por punto PDF
+  let currentPageRotation = 0; // grados horarios (/Rotate), 0/90/180/270
+  let currentRawPageWidthPts = 0;  // tamaño real de página (sin rotación), espacio de pdf-lib
+  let currentRawPageHeightPts = 0;
+  let manualRotation = 0;      // rotación elegida a mano (0/90/180/270, sentido horario)
+  let stampVisible = true;
   let stampNaturalW = 0, stampNaturalH = 0;
   let overlayLeft = 0, overlayTop = 0;
   let finalBlob = null;
@@ -472,6 +500,8 @@
     pdfDoc = null;
     finalBlob = null;
     currentPage = 1;
+    manualRotation = 0;
+    stampVisible = true;
     fileInput.value = '';
     showView('empty');
   }
@@ -482,6 +512,8 @@
   async function openPdfFile(file){
     try{
       showSpinner('Abriendo documento…');
+      manualRotation = 0;
+      stampVisible = true;
       originalArrayBuffer = await file.arrayBuffer();
       const loadingTask = pdfjsLib.getDocument({ data: originalArrayBuffer.slice(0) });
       pdfDoc = await loadingTask.promise;
@@ -500,8 +532,10 @@
 
   async function renderPage(num){
     const page = await pdfDoc.getPage(num);
+    const rotation = ((page.rotate % 360) + 360) % 360; // 0/90/180/270, sentido horario
     const containerWidth = Math.min(canvasScroll.clientWidth - 32, 720);
-    const baseViewport = page.getViewport({ scale: 1 });
+    const baseViewport = page.getViewport({ scale: 1 }); // ya incluye la rotación de la página
+    const rawViewport = page.getViewport({ scale: 1, rotation: 0 }); // tamaño "crudo", como lo ve pdf-lib
     const scale = containerWidth / baseViewport.width;
     const viewport = page.getViewport({ scale });
     const outputScale = window.devicePixelRatio || 1;
@@ -521,12 +555,17 @@
     currentPdfPageWidthPts = baseViewport.width;
     currentPdfPageHeightPts = baseViewport.height;
     currentRenderScale = scale;
+    currentPageRotation = rotation;
+    currentRawPageWidthPts = rawViewport.width;
+    currentRawPageHeightPts = rawViewport.height;
 
     pageIndicator.textContent = `Página ${num} de ${numPages}`;
     btnPrevPage.disabled = num <= 1;
     btnNextPage.disabled = num >= numPages;
 
     positionStampDefault();
+    applyStampRotationCss();
+    stampEl.style.display = stampVisible ? '' : 'none';
   }
 
   function positionStampDefault(){
@@ -554,6 +593,44 @@
     stampEl.style.left = overlayLeft + 'px';
     stampEl.style.top = overlayTop + 'px';
   }
+
+  function applyStampRotationCss(){
+    stampEl.style.transform = 'rotate(' + manualRotation + 'deg)';
+  }
+
+  function showStamp(){
+    stampVisible = true;
+    positionStampDefault();
+    applyStampRotationCss();
+    stampEl.style.display = '';
+    btnFirmar.disabled = false;
+    editorHelpEl.textContent = 'Arrastrá la firma hasta el lugar donde tiene que ir. Podés rotarla o quitarla con los botones de la esquina.';
+  }
+
+  function hideStamp(){
+    stampVisible = false;
+    stampEl.style.display = 'none';
+    btnFirmar.disabled = true;
+    editorHelpEl.innerHTML = 'Sacaste la firma de esta página. <button type="button" class="btn-text" id="btn-add-stamp-back" style="padding:6px 14px;border-radius:10px;">+ Agregar firma</button>';
+    const backBtn = document.getElementById('btn-add-stamp-back');
+    if (backBtn) backBtn.addEventListener('click', showStamp);
+  }
+
+  // ------------------------------------------------------------------
+  // Rotar / quitar la firma (botones sobre la propia firma)
+  // ------------------------------------------------------------------
+  [btnRotateStamp, btnRemoveStamp].forEach((btn) => {
+    btn.addEventListener('pointerdown', (e) => e.stopPropagation());
+  });
+  btnRotateStamp.addEventListener('click', (e) => {
+    e.stopPropagation();
+    manualRotation = (manualRotation + 90) % 360;
+    applyStampRotationCss();
+  });
+  btnRemoveStamp.addEventListener('click', (e) => {
+    e.stopPropagation();
+    hideStamp();
+  });
 
   // ------------------------------------------------------------------
   // Arrastrar la firma (mouse + touch, vía Pointer Events)
@@ -597,29 +674,62 @@
   // Firmar
   // ------------------------------------------------------------------
   btnFirmar.addEventListener('click', async () => {
+    if (!stampVisible) {
+      showToast('No hay firma para colocar en esta página.', 2600);
+      return;
+    }
     try{
       showSpinner('Firmando documento…');
-      const { PDFDocument } = PDFLib;
-      const pdfLibDoc = await PDFDocument.load(originalArrayBuffer);
+      const { PDFDocument, degrees } = PDFLib;
+      // ignoreEncryption + updateMetadata:false: varios PDF generados por
+      // sistemas de gestión documental traen permisos/metadata que hacen
+      // que pdf-lib rechace el archivo si no se le pide tolerancia.
+      const pdfLibDoc = await PDFDocument.load(originalArrayBuffer, {
+        ignoreEncryption: true,
+        updateMetadata: false
+      });
+
+      const pages = pdfLibDoc.getPages();
+      if (currentPage < 1 || currentPage > pages.length) {
+        throw new Error('la página ' + currentPage + ' ya no existe en el documento');
+      }
+      const page = pages[currentPage - 1];
+
       const pngBytes = base64ToBytes(SIGNATURE_BASE64);
       const pngImage = await pdfLibDoc.embedPng(pngBytes);
 
-      const page = pdfLibDoc.getPages()[currentPage - 1];
-      const stampWidthPts = currentPdfPageWidthPts * STAMP_WIDTH_RATIO;
       const ratio = (stampNaturalH && stampNaturalW) ? (stampNaturalH / stampNaturalW) : 0.49;
+      const stampWidthPts = currentPdfPageWidthPts * STAMP_WIDTH_RATIO;
       const stampHeightPts = stampWidthPts * ratio;
 
-      const pdfX = overlayLeft / currentRenderScale;
-      const pdfY = currentPdfPageHeightPts - (overlayTop / currentRenderScale) - stampHeightPts;
+      // Centro de la firma tal como se ve en pantalla (espacio "visual",
+      // el mismo que usa pdf.js para mostrar la página ya rotada).
+      const dispCx = (overlayLeft + stampEl.offsetWidth / 2) / currentRenderScale;
+      const dispCy = (overlayTop + stampEl.offsetHeight / 2) / currentRenderScale;
 
-      page.drawImage(pngImage, { x: pdfX, y: pdfY, width: stampWidthPts, height: stampHeightPts });
+      // pdf-lib coloca el contenido siempre en el espacio "crudo" de la
+      // página (el que ignora /Rotate), así que hay que convertir el punto
+      // y compensar la rotación de la página en la firma para que, una vez
+      // que el lector aplique /Rotate, todo quede donde se ve en pantalla.
+      const raw = dispPointToRaw(dispCx, dispCy, currentPageRotation, currentRawPageWidthPts, currentRawPageHeightPts);
+      const netCW = ((manualRotation - currentPageRotation) % 360 + 360) % 360;
+      const placed = computeStampAnchor(raw.x, raw.y, stampWidthPts, stampHeightPts, netCW);
+
+      page.drawImage(pngImage, {
+        x: placed.x,
+        y: placed.y,
+        width: stampWidthPts,
+        height: stampHeightPts,
+        rotate: degrees(placed.rotateDeg)
+      });
 
       const outBytes = await pdfLibDoc.save();
       finalBlob = new Blob([outBytes], { type: 'application/pdf' });
       showView('done');
     }catch(err){
       console.error(err);
-      showToast('No se pudo firmar el documento. Probá de nuevo.', 3400);
+      const detail = (err && err.message) ? (' (' + err.message + ')') : '';
+      showToast('No se pudo firmar el documento' + detail + '. Probá de nuevo.', 4200);
     }finally{
       hideSpinner();
     }
@@ -630,6 +740,32 @@
     const bytes = new Uint8Array(binStr.length);
     for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
     return bytes;
+  }
+
+  // Convierte un punto en espacio "visual" (el que se ve en pantalla, ya
+  // rotado por /Rotate) al espacio "crudo" que usa pdf-lib para dibujar.
+  function dispPointToRaw(xDisp, yDisp, rotation, rawW, rawH){
+    switch (((rotation % 360) + 360) % 360){
+      case 90:  return { x: yDisp,        y: xDisp };
+      case 180: return { x: rawW - xDisp, y: yDisp };
+      case 270: return { x: rawW - yDisp, y: rawH - xDisp };
+      default:  return { x: xDisp,        y: rawH - yDisp };
+    }
+  }
+
+  // Calcula la esquina inferior-izquierda (anclaje de pdf-lib) y el ángulo
+  // de rotación necesarios para que la firma, de tamaño w×h, quede
+  // centrada en (cx,cy) tras rotarla netCW grados horarios.
+  function computeStampAnchor(cx, cy, w, h, netCW){
+    let x, y;
+    switch (netCW){
+      case 90:  x = cx - h / 2; y = cy + w / 2; break;
+      case 180: x = cx + w / 2; y = cy + h / 2; break;
+      case 270: x = cx + h / 2; y = cy - w / 2; break;
+      default:  x = cx - w / 2; y = cy - h / 2; break;
+    }
+    const rotateDeg = (360 - netCW) % 360; // pdf-lib usa sentido antihorario positivo
+    return { x, y, rotateDeg };
   }
 
   // ------------------------------------------------------------------
