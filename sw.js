@@ -1,7 +1,7 @@
 // Service worker: cachea la app para que abra sin conexión y recibe los PDF
 // que llegan por el botón "Compartir" del celular (Web Share Target).
 
-const CACHE_VERSION = 'firma-cc-v2';
+const CACHE_VERSION = 'firma-cc-v3';
 const SHARED_FILES_CACHE = 'firma-cc-shared-files';
 
 const PRECACHE_URLS = [
